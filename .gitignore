@@ -1,0 +1,9 @@
+.env
+server/.env
+
+node_modules/
+
+server/masela.db
+server/masela.db-shm
+server/masela.db-wal
+server/uploads/
