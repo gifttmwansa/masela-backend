@@ -1,16 +1,45 @@
 const express = require("express");
+const fs = require("fs");
+const path = require("path");
 const { v4: uuid } = require("uuid");
 
 const db = require("../db");
-const { upload, publicUrlFor } = require("../uploadConfig");
+const {
+  upload,
+  UPLOAD_DIR,
+  publicUrlFor,
+} = require("../uploadConfig");
 const { requireAdmin } = require("../adminAuth");
 
 const router = express.Router();
 
+function deleteFile(filename) {
+  if (!filename) return;
+
+  const filePath = path.join(
+    UPLOAD_DIR,
+    filename
+  );
+
+  try {
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      console.log(`Deleted old file: ${filename}`);
+    }
+  } catch (error) {
+    console.error(
+      `Could not delete file ${filename}:`,
+      error
+    );
+  }
+}
+
 
 router.get("/notes", (req, res) => {
   const rows = db
-    .prepare("SELECT * FROM book_notes ORDER BY created_at DESC")
+    .prepare(
+      "SELECT * FROM book_notes ORDER BY created_at DESC"
+    )
     .all();
 
   res.json(rows.map(toNote));
@@ -42,85 +71,132 @@ router.post("/notes", requireAdmin, (req, res) => {
   res.status(201).json(toNote(row));
 });
 
+router.delete(
+  "/notes/:id",
+  requireAdmin,
+  (req, res) => {
+    const result = db
+      .prepare(
+        "DELETE FROM book_notes WHERE id = ?"
+      )
+      .run(req.params.id);
 
-router.delete("/notes/:id", requireAdmin, (req, res) => {
-  db.prepare("DELETE FROM book_notes WHERE id = ?").run(req.params.id);
+    if (result.changes === 0) {
+      return res.status(404).json({
+        error: "not found",
+      });
+    }
 
-  res.status(204).end();
-});
+    res.status(204).end();
+  }
+);
 
 
 router.get("/checklist", (req, res) => {
   const rows = db
-    .prepare("SELECT * FROM book_checklist ORDER BY created_at DESC")
+    .prepare(
+      "SELECT * FROM book_checklist ORDER BY created_at DESC"
+    )
     .all();
 
   res.json(rows.map(toChecklistItem));
 });
 
-router.post("/checklist", requireAdmin, (req, res) => {
-  const { title } = req.body;
+router.post(
+  "/checklist",
+  requireAdmin,
+  (req, res) => {
+    const { title } = req.body;
 
-  if (!title || !title.trim()) {
-    return res.status(400).json({
-      error: "title is required",
-    });
+    if (!title || !title.trim()) {
+      return res.status(400).json({
+        error: "title is required",
+      });
+    }
+
+    const row = {
+      id: uuid(),
+      title: title.trim(),
+      done: 0,
+      created_at: new Date().toISOString(),
+    };
+
+    db.prepare(
+      `INSERT INTO book_checklist
+        (id, title, done, created_at)
+       VALUES
+        (@id, @title, @done, @created_at)`
+    ).run(row);
+
+    res.status(201).json(
+      toChecklistItem(row)
+    );
   }
+);
 
-  const row = {
-    id: uuid(),
-    title: title.trim(),
-    done: 0,
-    created_at: new Date().toISOString(),
-  };
+router.patch(
+  "/checklist/:id",
+  requireAdmin,
+  (req, res) => {
+    const { done } = req.body;
 
-  db.prepare(
-    `INSERT INTO book_checklist
-      (id, title, done, created_at)
-     VALUES
-      (@id, @title, @done, @created_at)`
-  ).run(row);
+    const result = db
+      .prepare(
+        "UPDATE book_checklist SET done = ? WHERE id = ?"
+      )
+      .run(
+        done ? 1 : 0,
+        req.params.id
+      );
 
-  res.status(201).json(toChecklistItem(row));
-});
+    if (result.changes === 0) {
+      return res.status(404).json({
+        error: "not found",
+      });
+    }
 
-router.patch("/checklist/:id", requireAdmin, (req, res) => {
-  const { done } = req.body;
+    const row = db
+      .prepare(
+        "SELECT * FROM book_checklist WHERE id = ?"
+      )
+      .get(req.params.id);
 
-  const result = db
-    .prepare("UPDATE book_checklist SET done = ? WHERE id = ?")
-    .run(done ? 1 : 0, req.params.id);
-
-  if (result.changes === 0) {
-    return res.status(404).json({
-      error: "not found",
-    });
+    res.json(toChecklistItem(row));
   }
+);
 
-  const row = db
-    .prepare("SELECT * FROM book_checklist WHERE id = ?")
-    .get(req.params.id);
+router.delete(
+  "/checklist/:id",
+  requireAdmin,
+  (req, res) => {
+    const result = db
+      .prepare(
+        "DELETE FROM book_checklist WHERE id = ?"
+      )
+      .run(req.params.id);
 
-  res.json(toChecklistItem(row));
-});
+    if (result.changes === 0) {
+      return res.status(404).json({
+        error: "not found",
+      });
+    }
 
-
-router.delete("/checklist/:id", requireAdmin, (req, res) => {
-  db.prepare("DELETE FROM book_checklist WHERE id = ?").run(
-    req.params.id
-  );
-
-  res.status(204).end();
-});
+    res.status(204).end();
+  }
+);
 
 
 router.get("/photo", (req, res) => {
   const row = db
-    .prepare("SELECT * FROM book_photo WHERE id = 1")
+    .prepare(
+      "SELECT * FROM book_photo WHERE id = 1"
+    )
     .get();
 
   res.json({
-    url: row ? publicUrlFor(row.filename) : null,
+    url: row
+      ? publicUrlFor(row.filename)
+      : null,
   });
 });
 
@@ -136,18 +212,53 @@ router.post(
       });
     }
 
-    db.prepare(
-      `INSERT INTO book_photo (id, filename)
-       VALUES (1, ?)
-       ON CONFLICT(id)
-       DO UPDATE SET filename = excluded.filename`
-    ).run(req.file.filename);
+    const oldRow = db
+      .prepare(
+        "SELECT * FROM book_photo WHERE id = 1"
+      )
+      .get();
 
-    res.status(201).json({
-      url: publicUrlFor(req.file.filename),
-    });
+    const newFilename = req.file.filename;
+
+    try {
+      
+      db.prepare(
+        `INSERT INTO book_photo
+          (id, filename)
+         VALUES
+          (1, ?)
+         ON CONFLICT(id)
+         DO UPDATE SET filename = excluded.filename`
+      ).run(newFilename);
+
+    
+      if (
+        oldRow &&
+        oldRow.filename &&
+        oldRow.filename !== newFilename
+      ) {
+        deleteFile(oldRow.filename);
+      }
+
+      return res.status(201).json({
+        url: publicUrlFor(newFilename),
+      });
+    } catch (error) {
+      
+      deleteFile(newFilename);
+
+      console.error(
+        "Could not save book photo:",
+        error
+      );
+
+      return res.status(500).json({
+        error: "Could not save photo.",
+      });
+    }
   }
 );
+
 
 function toNote(row) {
   return {
